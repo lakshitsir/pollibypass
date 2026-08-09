@@ -1,0 +1,10 @@
+{
+  "name": "prxbin-ai-proxy",
+  "version": "1.0.0",
+  "description": "Public Rotating Proxy AI API",
+  "main": "api/chat.js",
+  "dependencies": {
+    "axios": "^1.7.0"
+  }
+}
+
