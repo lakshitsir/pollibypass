@@ -1,33 +1,50 @@
 const PRXBIN_MAIN = "https://pr-xbin.vercel.app/api/proxy";
 const PRXBIN_IP_CHECK = "https://pr-xbin.vercel.app/api/proxy/ip";
 
-// Timeout Helper
-function fetchWithTimeout(url, options = {}, timeoutMs = 6500) {
+// Safe AbortController Timeout to prevent Vercel 10s execution kill
+async function safeProxyFetch(url, options = {}, timeoutMs = 6000) {
     const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeoutMs);
-    return fetch(url, { ...options, signal: controller.signal })
-        .finally(() => clearTimeout(id));
-}
-
-function isErrorResponse(text) {
-    if (!text || typeof text !== 'string') return true;
-    const lower = text.toLowerCase();
-    return lower.includes('402 payment required') || 
-           lower.includes('api key budget too low') || 
-           lower.includes('deprecation_notice') || 
-           lower.includes('model not found') ||
-           lower.includes('rate limit') ||
-           lower.includes('service unavailable');
-}
-
-// Target 1: Pollinations via PRXBIN Proxy
-async function queryPollinations(prompt) {
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const encodedPrompt = encodeURIComponent(prompt);
-        const randomSeed = Math.floor(Math.random() * 9999999);
-        const targetUrl = `https://text.pollinations.ai/${encodedPrompt}?model=openai&seed=${randomSeed}&json=false`;
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+        clearTimeout(timer);
+        return response;
+    } catch (err) {
+        clearTimeout(timer);
+        return null;
+    }
+}
 
-        const proxyPayload = {
+// Clean response parsing
+function cleanText(input) {
+    if (!input) return "";
+    let str = typeof input === 'string' ? input : JSON.stringify(input);
+    if (str.includes('$@$')) str = str.split('$@$')[0];
+    return str.trim();
+}
+
+// Detect Bad Gateway or Provider Errors
+function isBadResponse(text) {
+    if (!text || text.length === 0) return true;
+    const lower = text.toLowerCase();
+    return lower.includes('402 payment required') ||
+           lower.includes('api key budget too low') ||
+           lower.includes('deprecation_notice') ||
+           lower.includes('model not found') ||
+           lower.includes('service unavailable') ||
+           lower.includes('rate limit');
+}
+
+// Strictly Via PRXBIN Proxy Node
+async function getPollinationsProxy(prompt) {
+    try {
+        const seed = Math.floor(Math.random() * 899999) + 100000;
+        const targetUrl = `https://text.pollinations.ai/${encodeURIComponent(prompt)}?model=openai&seed=${seed}`;
+        
+        const payload = {
             url: targetUrl,
             method: "GET",
             headers: {
@@ -37,62 +54,22 @@ async function queryPollinations(prompt) {
             }
         };
 
-        const res = await fetchWithTimeout(PRXBIN_MAIN, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(proxyPayload)
-        }, 6000);
-
-        if (!res.ok) return "";
-        return await res.text();
-    } catch (e) {
-        return "";
-    }
-}
-
-// Target 2: Blackbox AI via PRXBIN Proxy (Fallback)
-async function queryBlackbox(prompt) {
-    try {
-        const targetUrl = "https://www.blackbox.ai/api/chat";
-
-        const proxyPayload = {
-            url: targetUrl,
+        const res = await safeProxyFetch(PRXBIN_MAIN, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-            },
-            data: JSON.stringify({
-                messages: [{ id: "msg_" + Date.now(), content: prompt, role: "user" }],
-                id: "chat_" + Date.now(),
-                previewToken: null,
-                userId: null,
-                codeModelMode": true,
-                agentMode: {},
-                trendingAgentMode: {},
-                isGrounded: false
-            })
-        };
-
-        const res = await fetchWithTimeout(PRXBIN_MAIN, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(proxyPayload)
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
         }, 6500);
 
-        if (!res.ok) return "";
-        let text = await res.text();
-        if (text.includes('$@$')) {
-            text = text.split('$@$')[0];
-        }
-        return text;
+        if (!res || !res.ok) return null;
+        const data = await res.text();
+        return cleanText(data);
     } catch (e) {
-        return "";
+        return null;
     }
 }
 
 module.exports = async (req, res) => {
-    // CORS Setup
+    // Universal CORS Setup
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -102,9 +79,19 @@ module.exports = async (req, res) => {
     }
 
     try {
-        let prompt = req.query.prompt || (req.body && req.body.prompt);
+        // Multi-format Prompt Extractor (Query Param, Plain Text, or JSON Body)
+        let prompt = "";
+        if (req.query && req.query.prompt) {
+            prompt = req.query.prompt;
+        } else if (req.body) {
+            if (typeof req.body === 'string') {
+                try { prompt = JSON.parse(req.body).prompt || ""; } catch(e) { prompt = req.body; }
+            } else if (typeof req.body === 'object') {
+                prompt = req.body.prompt || "";
+            }
+        }
 
-        if (!prompt) {
+        if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
             return res.status(400).json({
                 success: false,
                 error: "Please provide 'prompt' parameter. Example: /api/chat?prompt=Hello",
@@ -112,45 +99,40 @@ module.exports = async (req, res) => {
             });
         }
 
-        // STEP 1: FORCE IP ROTATION / REFRESH
-        let rotatedIp = "Rotated Proxy Node";
+        // STEP 1: PROXY IP EXTRACTION & ACTIVE CHECK
+        let proxyIp = "Rotated Proxy Node";
         try {
-            const refreshUrl = `${PRXBIN_IP_CHECK}?_ts=${Date.now()}_${Math.random()}`;
-            const ipRes = await fetchWithTimeout(refreshUrl, {
-                headers: { 'Cache-Control': 'no-cache, no-store' }
-            }, 2000);
+            const ipRes = await safeProxyFetch(`${PRXBIN_IP_CHECK}?_ts=${Date.now()}`, {
+                headers: { 'Cache-Control': 'no-cache' }
+            }, 2500);
             
-            if (ipRes.ok) {
+            if (ipRes && ipRes.ok) {
                 const ipData = await ipRes.json();
-                rotatedIp = ipData.ip || ipData.origin || rotatedIp;
+                proxyIp = ipData.ip || ipData.origin || proxyIp;
             }
         } catch (e) {}
 
-        // STEP 2: MULTI-PROVIDER AI ROUTE VIA PROXY
-        let aiReply = await queryPollinations(prompt);
+        // STEP 2: EXECUTE REQUEST (STRICTLY PROXY ONLY)
+        let answer = await getPollinationsProxy(prompt);
 
-        if (isErrorResponse(aiReply)) {
-            aiReply = await queryBlackbox(prompt);
-        }
-
-        if (!aiReply || isErrorResponse(aiReply)) {
-            aiReply = "Service temporarily busy, please retry your request.";
+        if (!answer || isBadResponse(answer)) {
+            answer = "Proxy node timed out or target service busy. Please retry your request.";
         }
 
         return res.status(200).json({
             success: true,
             prompt: prompt,
-            response: aiReply.trim(),
-            proxy_ip: rotatedIp,
+            response: answer,
+            proxy_ip: proxyIp,
             developer: "@lakshitpatidar"
         });
 
     } catch (fatalError) {
+        // Guarantees zero 500 FUNCTION_INVOCATION_FAILED errors
         return res.status(200).json({
             success: false,
-            error: "Execution Exception: " + fatalError.message,
+            error: "Execution Exception: " + (fatalError.message || "Unknown Error"),
             developer: "@lakshitpatidar"
         });
     }
 };
-            
