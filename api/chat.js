@@ -1,9 +1,9 @@
-import axios from 'axios';
+const axios = require('axios');
 
 const PRXBIN_MAIN = "https://pr-xbin.vercel.app/api/proxy";
 const PRXBIN_IP_CHECK = "https://pr-xbin.vercel.app/api/proxy/ip";
 
-// Helper: Check if returned string contains HTTP / Budget / Rate-limit errors
+// Helper to detect API error garbage
 function isErrorResponse(text) {
     if (!text || typeof text !== 'string') return true;
     const lower = text.toLowerCase();
@@ -15,7 +15,7 @@ function isErrorResponse(text) {
            lower.includes('service unavailable');
 }
 
-// Target 1: Pollinations AI with Direct Referer & Seed Bypass
+// Target 1: Pollinations AI via Proxy
 async function queryPollinations(prompt) {
     const encodedPrompt = encodeURIComponent(prompt);
     const randomSeed = Math.floor(Math.random() * 9999999);
@@ -37,7 +37,7 @@ async function queryPollinations(prompt) {
     return text;
 }
 
-// Target 2: Blackbox AI via PRXBIN Proxy (Fallback Route)
+// Target 2: Blackbox AI via Proxy (Fallback)
 async function queryBlackbox(prompt) {
     const targetUrl = "https://www.blackbox.ai/api/chat";
 
@@ -64,15 +64,14 @@ async function queryBlackbox(prompt) {
     const res = await axios.post(PRXBIN_MAIN, proxyPayload, { timeout: 8000 });
     let text = typeof res.data === 'string' ? res.data : (res.data.data || JSON.stringify(res.data));
     
-    // Clean citation strings if present in Blackbox response
     if (text.includes('$@$')) {
         text = text.split('$@$')[0];
     }
     return text;
 }
 
-export default async function handler(req, res) {
-    // CORS Setup for Public & Cross-Origin Access
+module.exports = async (req, res) => {
+    // CORS Headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -92,10 +91,9 @@ export default async function handler(req, res) {
             });
         }
 
-        // STEP 1: FORCE PRXBIN PROXY REFRESH & IP EXTRACTION
+        // STEP 1: FORCE REFRESH PROXY IP
         let rotatedIp = "Rotated Proxy Node";
         try {
-            // Anti-cache query string ensures PRXBIN executes a brand-new outbound IP check
             const refreshUrl = `${PRXBIN_IP_CHECK}?_ts=${Date.now()}_${Math.random()}`;
             const ipRes = await axios.get(refreshUrl, { 
                 timeout: 2000,
@@ -105,31 +103,27 @@ export default async function handler(req, res) {
                 }
             });
             rotatedIp = ipRes.data.ip || ipRes.data.origin || rotatedIp;
-        } catch (e) {
-            // Continuation even if IP check endpoint is slow
-        }
+        } catch (e) {}
 
-        // STEP 2: EXECUTE AI QUERY THROUGH ROTATED PROXY PIPELINE
+        // STEP 2: EXECUTE AI QUERY
         let aiReply = "";
 
-        // Attempt 1: Pollinations
+        // Try Pollinations
         try {
             aiReply = await queryPollinations(prompt);
         } catch (e) {}
 
-        // Attempt 2: Blackbox AI Fallback if Attempt 1 has errors / payment blocks
+        // Fallback to Blackbox if Pollinations fails
         if (isErrorResponse(aiReply)) {
             try {
                 aiReply = await queryBlackbox(prompt);
             } catch (e) {}
         }
 
-        // Fallback message if all attempts fail
         if (!aiReply || isErrorResponse(aiReply)) {
             aiReply = "Service temporarily busy, please resubmit your prompt.";
         }
 
-        // Final Structured Output
         return res.status(200).json({
             success: true,
             prompt: prompt,
@@ -141,8 +135,9 @@ export default async function handler(req, res) {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            error: "Proxy or Execution Error: " + error.message,
+            error: "Proxy or Server Error: " + error.message,
             developer: "@lakshitpatidar"
         });
     }
-}
+};
+        
