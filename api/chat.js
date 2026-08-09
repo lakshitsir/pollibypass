@@ -4,7 +4,7 @@ const PRXBIN_MAIN = "https://pr-xbin.vercel.app/api/proxy";
 const PRXBIN_IP_CHECK = "https://pr-xbin.vercel.app/api/proxy/ip";
 
 export default async function handler(req, res) {
-    // CORS Setup
+    // CORS Setup for Public Access
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -14,7 +14,6 @@ export default async function handler(req, res) {
     }
 
     try {
-        // GET Query Param OR POST Body Payload
         let prompt = req.query.prompt || (req.body && req.body.prompt);
 
         if (!prompt) {
@@ -25,62 +24,51 @@ export default async function handler(req, res) {
             });
         }
 
-        // Step 1: Proxy IP Check
+        // STEP 1: FORCE IP ROTATION / REFRESH
+        // AI request bhejane se pehle explicit proxy refresh hit
         let rotatedIp = "Rotated Proxy Node";
         try {
-            const ipRes = await axios.get(PRXBIN_IP_CHECK, { timeout: 2000 });
+            const ipRes = await axios.get(PRXBIN_IP_CHECK, { 
+                timeout: 2500,
+                headers: { 'Cache-Control': 'no-cache, no-store' }
+            });
             rotatedIp = ipRes.data.ip || ipRes.data.origin || rotatedIp;
-        } catch (e) {}
+        } catch (e) {
+            // Continuation if check endpoint takes extra time
+        }
 
-        // Step 2: Ultra-Fast Public Endpoint (No Payment Block & High Speed)
-        const targetUrl = "https://api.deepinfra.com/v1/openai/chat/completions";
+        // STEP 2: TARGET AI REQUEST VIA PRXBIN PROXY
+        const encodedPrompt = encodeURIComponent(prompt);
+        const targetUrl = `https://text.pollinations.ai/${encodedPrompt}?model=mistral`;
 
         const proxyPayload = {
             url: targetUrl,
-            method: "POST",
+            method: "GET",
             headers: {
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-            },
-            data: JSON.stringify({
-                model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-                messages: [
-                    { role: "system", content: "You are a concise and smart AI assistant." },
-                    { role: "user", content: prompt }
-                ],
-                temperature: 0.7,
-                max_tokens: 500
-            })
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Cache-Control": "no-cache"
+            }
         };
 
-        const response = await axios.post(PRXBIN_MAIN, proxyPayload, { timeout: 8000 });
+        const response = await axios.post(PRXBIN_MAIN, proxyPayload, { timeout: 8500 });
         let rawData = response.data;
         let aiReply = "";
 
-        // Unwrap PRXBIN wrapper if present
         if (typeof rawData === 'object' && rawData.data) {
             rawData = rawData.data;
         }
 
         if (typeof rawData === 'string') {
-            try {
-                rawData = JSON.parse(rawData);
-            } catch (e) {}
-        }
-
-        // Extract Response Content
-        if (rawData && rawData.choices && rawData.choices[0] && rawData.choices[0].message) {
-            aiReply = rawData.choices[0].message.content;
-        } else if (typeof rawData === 'string') {
             aiReply = rawData;
-        } else {
-            aiReply = JSON.stringify(rawData);
+        } else if (typeof rawData === 'object' && rawData !== null) {
+            aiReply = rawData.content || rawData.response || JSON.stringify(rawData);
         }
 
+        // Clean Response JSON Output
         return res.status(200).json({
             success: true,
             prompt: prompt,
-            response: aiReply,
+            response: aiReply.trim(),
             proxy_ip: rotatedIp,
             developer: "@lakshitpatidar"
         });
@@ -93,4 +81,3 @@ export default async function handler(req, res) {
         });
     }
 }
-    
