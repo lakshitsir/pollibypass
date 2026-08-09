@@ -25,59 +25,63 @@ export default async function handler(req, res) {
             });
         }
 
-        // Step 1: Force IP Rotation Check
+        // Step 1: Proxy IP Check
         let rotatedIp = "Rotated Proxy Node";
         try {
-            const ipRes = await axios.get(PRXBIN_IP_CHECK, { timeout: 3000 });
+            const ipRes = await axios.get(PRXBIN_IP_CHECK, { timeout: 2500 });
             rotatedIp = ipRes.data.ip || ipRes.data.origin || rotatedIp;
-        } catch (e) {
-            // Continuation even if IP check endpoint is slow
-        }
+        } catch (e) {}
 
-        // Step 2: Target AI Query via PRXBIN Proxy
-        const targetUrl = "https://text.pollinations.ai/openai";
+        // Step 2: Target Pollinations GET Endpoint (Sureshot Prompt Delivery via URL)
+        const encodedPrompt = encodeURIComponent(prompt);
+        const targetUrl = `https://text.pollinations.ai/${encodedPrompt}?model=openai&json=true`;
+
         const proxyPayload = {
             url: targetUrl,
-            method: "POST",
+            method: "GET",
             headers: {
-                "Content-Type": "application/json",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-            },
-            data: JSON.stringify({
-                messages: [
-                    { role: "user", content: prompt }
-                ],
-                model: "openai",
-                code: "beartoken"
-            })
+            }
         };
 
-        const response = await axios.post(PRXBIN_MAIN, proxyPayload, { timeout: 8500 });
+        const response = await axios.post(PRXBIN_MAIN, proxyPayload, { timeout: 9500 });
         
-        let aiReply = response.data;
+        let rawData = response.data;
+        let aiReply = "";
 
-        // Clean response extraction
-        if (typeof aiReply === 'object') {
-            if (aiReply.choices && aiReply.choices[0] && aiReply.choices[0].message) {
-                aiReply = aiReply.choices[0].message.content;
-            } else if (aiReply.data) {
-                aiReply = aiReply.data;
-            } else if (aiReply.response) {
-                aiReply = aiReply.response;
+        // PRXBIN Response Unwrap Logic
+        if (typeof rawData === 'object' && rawData.data) {
+            rawData = rawData.data;
+        }
+
+        // If stringified JSON returned
+        if (typeof rawData === 'string') {
+            try {
+                rawData = JSON.parse(rawData);
+            } catch (e) {
+                aiReply = rawData;
             }
         }
 
-        // Format string output if json object is returned as string
-        if (typeof aiReply === 'string' && aiReply.trim().startsWith('{')) {
-            try {
-                const parsed = JSON.parse(aiReply);
-                if (parsed.choices && parsed.choices[0]?.message?.content) {
-                    aiReply = parsed.choices[0].message.content;
-                }
-            } catch (e) {}
+        // Extracting ONLY the clean message text
+        if (typeof rawData === 'object' && rawData !== null) {
+            if (rawData.choices && rawData.choices[0] && rawData.choices[0].message) {
+                aiReply = rawData.choices[0].message.content;
+            } else if (rawData.content) {
+                aiReply = rawData.content;
+            } else if (rawData.response) {
+                aiReply = rawData.response;
+            } else {
+                aiReply = JSON.stringify(rawData);
+            }
         }
 
-        // Return JSON Response
+        // Fallback Cleanup
+        if (!aiReply) {
+            aiReply = String(rawData);
+        }
+
+        // Final Clean JSON Output
         return res.status(200).json({
             success: true,
             prompt: prompt,
@@ -89,9 +93,9 @@ export default async function handler(req, res) {
     } catch (error) {
         return res.status(500).json({
             success: false,
-            error: "Proxy or Target Timeout: " + error.message,
+            error: "Proxy Timeout or Network Error: " + error.message,
             developer: "@lakshitpatidar"
         });
     }
-}
-  
+            }
+
