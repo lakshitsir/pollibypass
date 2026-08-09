@@ -1,15 +1,12 @@
 const PRXBIN_MAIN = "https://pr-xbin.vercel.app/api/proxy";
 const PRXBIN_IP_CHECK = "https://pr-xbin.vercel.app/api/proxy/ip";
 
-// Safe AbortController Timeout (Increased to 9s for slower target AI responses)
-async function safeProxyFetch(url, options = {}, timeoutMs = 9000) {
+// Safe execution timeout
+async function safeProxyFetch(url, options = {}, timeoutMs = 8500) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const response = await fetch(url, {
-            ...options,
-            signal: controller.signal
-        });
+        const response = await fetch(url, { ...options, signal: controller.signal });
         clearTimeout(timer);
         return response;
     } catch (err) {
@@ -18,6 +15,7 @@ async function safeProxyFetch(url, options = {}, timeoutMs = 9000) {
     }
 }
 
+// Clean and parse proxy nested responses
 function cleanText(input) {
     if (!input) return "";
     let str = typeof input === 'string' ? input : JSON.stringify(input);
@@ -25,70 +23,119 @@ function cleanText(input) {
     return str.trim();
 }
 
+// Detect Bad Gateway, IP Bans, or HTML errors
 function isBadResponse(text) {
-    if (!text || text.length === 0) return true;
+    if (!text || text.length < 2) return true;
     const lower = text.toLowerCase();
     return lower.includes('402 payment required') ||
-           lower.includes('api key budget too low') ||
+           lower.includes('api key budget') ||
            lower.includes('deprecation_notice') ||
            lower.includes('model not found') ||
-           lower.includes('service unavailable') ||
+           lower.includes('<!doctype html>') ||
+           lower.includes('cloudflare') ||
            lower.includes('rate limit');
 }
 
-// Strictly Via PRXBIN Proxy Node
+// ==========================================
+// TARGET 1: Blackbox AI (STRICTLY VIA PROXY)
+// ==========================================
+async function getBlackboxProxy(prompt) {
+    try {
+        const payload = {
+            url: "https://www.blackbox.ai/api/chat",
+            method: "POST",
+            headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
+            data: {
+                messages: [{ id: "1", content: prompt, role: "user" }],
+                id: "1",
+                previewToken: null,
+                userId: null,
+                codeModelMode: true,
+                agentMode: {},
+                trendingAgentMode: {},
+                isGrounded: false
+            }
+        };
+
+        const res = await safeProxyFetch(PRXBIN_MAIN, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        }, 8000);
+
+        if (!res || !res.ok) return null;
+        let text = await res.text();
+        
+        try {
+            let json = JSON.parse(text);
+            if (json.data) text = typeof json.data === 'string' ? json.data : JSON.stringify(json.data);
+        } catch(e) {}
+        
+        return cleanText(text);
+    } catch (e) { return null; }
+}
+
+// ==============================================
+// TARGET 2: Pollinations AI (STRICTLY VIA PROXY)
+// ==============================================
 async function getPollinationsProxy(prompt) {
     try {
-        const seed = Math.floor(Math.random() * 899999) + 100000;
-        // Clean Target URL
-        const targetUrl = `https://text.pollinations.ai/${encodeURIComponent(prompt)}?seed=${seed}`;
-        
-        // Multi-compatibility payload structure for PRXBIN
+        const seed = Math.floor(Math.random() * 999999);
         const payload = {
-            url: targetUrl,
+            url: `https://text.pollinations.ai/${encodeURIComponent(prompt)}?model=openai&seed=${seed}`,
+            method: "GET",
+            headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://pollinations.ai/" }
+        };
+
+        const res = await safeProxyFetch(PRXBIN_MAIN, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        }, 7500);
+
+        if (!res || !res.ok) return null;
+        let text = await res.text();
+        
+        try {
+            let json = JSON.parse(text);
+            if (json.data) text = typeof json.data === 'string' ? json.data : JSON.stringify(json.data);
+        } catch(e) {}
+        
+        return cleanText(text);
+    } catch (e) { return null; }
+}
+
+// ===========================================
+// TARGET 3: Backup API (STRICTLY VIA PROXY)
+// ===========================================
+async function getBackupProxy(prompt) {
+    try {
+        const payload = {
+            url: `https://api.popcat.xyz/chatbot?msg=${encodeURIComponent(prompt)}&owner=Lakshitsir&botname=Kanu`,
             method: "GET"
         };
 
-        // Execution Method 1: Standard POST to PRXBIN
-        let res = await safeProxyFetch(PRXBIN_MAIN, {
+        const res = await safeProxyFetch(PRXBIN_MAIN, {
             method: "POST",
-            headers: { 
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0"
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
-        }, 8500);
-
-        // Execution Method 2: Query-string GET route fallback if POST times out on PRXBIN
-        if (!res || !res.ok) {
-            const getProxyUrl = `${PRXBIN_MAIN}?url=${encodeURIComponent(targetUrl)}`;
-            res = await safeProxyFetch(getProxyUrl, {
-                method: "GET",
-                headers: { "User-Agent": "Mozilla/5.0" }
-            }, 8500);
-        }
+        }, 6500);
 
         if (!res || !res.ok) return null;
+        let text = await res.text();
         
-        // Parse JSON or Raw Text depending on PRXBIN wrapper structure
-        const contentType = res.headers.get("content-type") || "";
-        if (contentType.includes("application/json")) {
-            const jsonData = await res.json();
-            if (jsonData.data) return cleanText(jsonData.data);
-            if (jsonData.response) return cleanText(jsonData.response);
-            if (jsonData.result) return cleanText(jsonData.result);
-            return cleanText(jsonData);
-        } else {
-            const data = await res.text();
-            return cleanText(data);
-        }
-    } catch (e) {
-        return null;
-    }
+        try {
+            let json = JSON.parse(text);
+            let actualData = json.data || json;
+            if (actualData.response) return actualData.response;
+        } catch(e) {}
+        
+        return cleanText(text);
+    } catch (e) { return null; }
 }
 
 module.exports = async (req, res) => {
-    // Universal CORS Setup
+    // Universal CORS Allow All
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -117,24 +164,31 @@ module.exports = async (req, res) => {
             });
         }
 
-        // STEP 1: PROXY IP EXTRACTION & ACTIVE CHECK
+        // STEP 1: IP ROTATION & EXTRACTION
         let proxyIp = "Rotated Proxy Node";
         try {
             const ipRes = await safeProxyFetch(`${PRXBIN_IP_CHECK}?_ts=${Date.now()}`, {
                 headers: { 'Cache-Control': 'no-cache' }
             }, 2500);
-            
             if (ipRes && ipRes.ok) {
                 const ipData = await ipRes.json();
                 proxyIp = ipData.ip || ipData.origin || proxyIp;
             }
         } catch (e) {}
 
-        // STEP 2: EXECUTE REQUEST (STRICTLY PROXY ONLY)
-        let answer = await getPollinationsProxy(prompt);
+        // STEP 2: CASCADE EXECUTION (ALL 100% VIA PROXY)
+        let answer = await getBlackboxProxy(prompt);
 
         if (!answer || isBadResponse(answer)) {
-            answer = "Proxy node timed out or target service busy. Please retry your request.";
+            answer = await getPollinationsProxy(prompt);
+        }
+
+        if (!answer || isBadResponse(answer)) {
+            answer = await getBackupProxy(prompt);
+        }
+
+        if (!answer || isBadResponse(answer)) {
+            answer = "Proxy IPs are currently rate-limited by all AI targets. Please try again in a few moments.";
         }
 
         return res.status(200).json({
@@ -148,9 +202,9 @@ module.exports = async (req, res) => {
     } catch (fatalError) {
         return res.status(200).json({
             success: false,
-            error: "Execution Exception: " + (fatalError.message || "Unknown Error"),
+            error: "Proxy Network Exception: " + (fatalError.message || "Unknown"),
             developer: "@lakshitpatidar"
         });
     }
 };
-    
+               
