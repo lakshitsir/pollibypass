@@ -2,5 +2,5 @@
   "name": "prxbin-ai-proxy",
   "version": "1.0.0",
   "description": "Public Rotating Proxy AI API",
-  "main": "api/index.js"
+  "main": "api/chat.js"
 }
