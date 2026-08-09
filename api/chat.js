@@ -25,7 +25,6 @@ export default async function handler(req, res) {
         }
 
         // STEP 1: FORCE IP ROTATION / REFRESH
-        // AI request bhejane se pehle explicit proxy refresh hit
         let rotatedIp = "Rotated Proxy Node";
         try {
             const ipRes = await axios.get(PRXBIN_IP_CHECK, { 
@@ -34,12 +33,13 @@ export default async function handler(req, res) {
             });
             rotatedIp = ipRes.data.ip || ipRes.data.origin || rotatedIp;
         } catch (e) {
-            // Continuation if check endpoint takes extra time
+            // Fallback if IP check endpoint takes extra time
         }
 
-        // STEP 2: TARGET AI REQUEST VIA PRXBIN PROXY
+        // STEP 2: QUERY LATEST HIGH-QUALITY MODEL VIA PROXY
         const encodedPrompt = encodeURIComponent(prompt);
-        const targetUrl = `https://text.pollinations.ai/${encodedPrompt}?model=mistral`;
+        // Using 'openai' model route (GPT-4o / Llama-3 class model)
+        const targetUrl = `https://text.pollinations.ai/${encodedPrompt}?model=openai`;
 
         const proxyPayload = {
             url: targetUrl,
@@ -64,7 +64,20 @@ export default async function handler(req, res) {
             aiReply = rawData.content || rawData.response || JSON.stringify(rawData);
         }
 
-        // Clean Response JSON Output
+        // Check if returned text is JSON error string
+        if (aiReply.trim().startsWith('{')) {
+            try {
+                const parsed = JSON.parse(aiReply);
+                if (parsed.error) {
+                    // Retry fallback to default model route
+                    const fallbackUrl = `https://text.pollinations.ai/${encodedPrompt}`;
+                    const fallbackRes = await axios.post(PRXBIN_MAIN, { ...proxyPayload, url: fallbackUrl }, { timeout: 7000 });
+                    aiReply = typeof fallbackRes.data === 'string' ? fallbackRes.data : JSON.stringify(fallbackRes.data);
+                }
+            } catch (e) {}
+        }
+
+        // Clean JSON Output Response
         return res.status(200).json({
             success: true,
             prompt: prompt,
@@ -80,4 +93,5 @@ export default async function handler(req, res) {
             developer: "@lakshitpatidar"
         });
     }
-}
+            }
+        
