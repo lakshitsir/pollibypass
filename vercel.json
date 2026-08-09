@@ -3,11 +3,11 @@
   "rewrites": [
     {
       "source": "/api/chat",
-      "destination": "/api/chat.js"
+      "destination": "/api/index.js"
     },
     {
-      "source": "/",
-      "destination": "/api/chat.js"
+      "source": "/(.*)",
+      "destination": "/api/index.js"
     }
   ]
 }
