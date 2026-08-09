@@ -1,8 +1,8 @@
 const PRXBIN_MAIN = "https://pr-xbin.vercel.app/api/proxy";
 const PRXBIN_IP_CHECK = "https://pr-xbin.vercel.app/api/proxy/ip";
 
-// Safe AbortController Timeout to prevent Vercel 10s execution kill
-async function safeProxyFetch(url, options = {}, timeoutMs = 6000) {
+// Safe AbortController Timeout (Increased to 9s for slower target AI responses)
+async function safeProxyFetch(url, options = {}, timeoutMs = 9000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -18,7 +18,6 @@ async function safeProxyFetch(url, options = {}, timeoutMs = 6000) {
     }
 }
 
-// Clean response parsing
 function cleanText(input) {
     if (!input) return "";
     let str = typeof input === 'string' ? input : JSON.stringify(input);
@@ -26,7 +25,6 @@ function cleanText(input) {
     return str.trim();
 }
 
-// Detect Bad Gateway or Provider Errors
 function isBadResponse(text) {
     if (!text || text.length === 0) return true;
     const lower = text.toLowerCase();
@@ -42,27 +40,48 @@ function isBadResponse(text) {
 async function getPollinationsProxy(prompt) {
     try {
         const seed = Math.floor(Math.random() * 899999) + 100000;
-        const targetUrl = `https://text.pollinations.ai/${encodeURIComponent(prompt)}?model=openai&seed=${seed}`;
+        // Clean Target URL
+        const targetUrl = `https://text.pollinations.ai/${encodeURIComponent(prompt)}?seed=${seed}`;
         
+        // Multi-compatibility payload structure for PRXBIN
         const payload = {
             url: targetUrl,
-            method: "GET",
-            headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://pollinations.ai/",
-                "Cache-Control": "no-cache"
-            }
+            method: "GET"
         };
 
-        const res = await safeProxyFetch(PRXBIN_MAIN, {
+        // Execution Method 1: Standard POST to PRXBIN
+        let res = await safeProxyFetch(PRXBIN_MAIN, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0"
+            },
             body: JSON.stringify(payload)
-        }, 6500);
+        }, 8500);
+
+        // Execution Method 2: Query-string GET route fallback if POST times out on PRXBIN
+        if (!res || !res.ok) {
+            const getProxyUrl = `${PRXBIN_MAIN}?url=${encodeURIComponent(targetUrl)}`;
+            res = await safeProxyFetch(getProxyUrl, {
+                method: "GET",
+                headers: { "User-Agent": "Mozilla/5.0" }
+            }, 8500);
+        }
 
         if (!res || !res.ok) return null;
-        const data = await res.text();
-        return cleanText(data);
+        
+        // Parse JSON or Raw Text depending on PRXBIN wrapper structure
+        const contentType = res.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+            const jsonData = await res.json();
+            if (jsonData.data) return cleanText(jsonData.data);
+            if (jsonData.response) return cleanText(jsonData.response);
+            if (jsonData.result) return cleanText(jsonData.result);
+            return cleanText(jsonData);
+        } else {
+            const data = await res.text();
+            return cleanText(data);
+        }
     } catch (e) {
         return null;
     }
@@ -79,7 +98,6 @@ module.exports = async (req, res) => {
     }
 
     try {
-        // Multi-format Prompt Extractor (Query Param, Plain Text, or JSON Body)
         let prompt = "";
         if (req.query && req.query.prompt) {
             prompt = req.query.prompt;
@@ -128,7 +146,6 @@ module.exports = async (req, res) => {
         });
 
     } catch (fatalError) {
-        // Guarantees zero 500 FUNCTION_INVOCATION_FAILED errors
         return res.status(200).json({
             success: false,
             error: "Execution Exception: " + (fatalError.message || "Unknown Error"),
@@ -136,3 +153,4 @@ module.exports = async (req, res) => {
         });
     }
 };
+    
