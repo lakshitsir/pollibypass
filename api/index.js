@@ -1,26 +1,15 @@
-const axios = require('axios');
-
 const PRXBIN_MAIN = "https://pr-xbin.vercel.app/api/proxy";
 const PRXBIN_IP_CHECK = "https://pr-xbin.vercel.app/api/proxy/ip";
 
-// Helper: Safely parse text response
-function parseSafeText(data) {
-    if (!data) return "";
-    if (typeof data === 'string') return data;
-    if (typeof data === 'object') {
-        if (data.data) return parseSafeText(data.data);
-        if (data.content) return String(data.content);
-        if (data.response) return String(data.response);
-        try {
-            return JSON.stringify(data);
-        } catch (e) {
-            return String(data);
-        }
-    }
-    return String(data);
+// Helper: Timeout Controller to prevent Vercel 10s Execution Kill
+function fetchWithTimeout(url, options = {}, timeoutMs = 6500) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    return fetch(url, { ...options, signal: controller.signal })
+        .finally(() => clearTimeout(id));
 }
 
-// Helper: Check for error strings
+// Helper: Detect API Error Strings
 function isErrorResponse(text) {
     if (!text || typeof text !== 'string') return true;
     const lower = text.toLowerCase();
@@ -32,7 +21,7 @@ function isErrorResponse(text) {
            lower.includes('service unavailable');
 }
 
-// Target 1: Pollinations AI via Proxy
+// Target 1: Pollinations via PRXBIN Proxy
 async function queryPollinations(prompt) {
     try {
         const encodedPrompt = encodeURIComponent(prompt);
@@ -49,14 +38,21 @@ async function queryPollinations(prompt) {
             }
         };
 
-        const res = await axios.post(PRXBIN_MAIN, proxyPayload, { timeout: 6000 });
-        return parseSafeText(res.data);
-    } catch (err) {
+        const res = await fetchWithTimeout(PRXBIN_MAIN, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(proxyPayload)
+        }, 6000);
+
+        if (!res.ok) return "";
+        const text = await res.text();
+        return text;
+    } catch (e) {
         return "";
     }
 }
 
-// Target 2: Blackbox AI via Proxy (Fallback)
+// Target 2: Blackbox AI via PRXBIN Proxy (Fallback)
 async function queryBlackbox(prompt) {
     try {
         const targetUrl = "https://www.blackbox.ai/api/chat";
@@ -80,19 +76,25 @@ async function queryBlackbox(prompt) {
             })
         };
 
-        const res = await axios.post(PRXBIN_MAIN, proxyPayload, { timeout: 6500 });
-        let text = parseSafeText(res.data);
+        const res = await fetchWithTimeout(PRXBIN_MAIN, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(proxyPayload)
+        }, 6500);
+
+        if (!res.ok) return "";
+        let text = await res.text();
         if (text.includes('$@$')) {
             text = text.split('$@$')[0];
         }
         return text;
-    } catch (err) {
+    } catch (e) {
         return "";
     }
 }
 
 module.exports = async (req, res) => {
-    // Top-Level Error Catching to prevent Vercel 500 Crash
+    // Universal Catch-All to prevent Vercel 500 Function Invocation Crashes
     try {
         // CORS Headers
         res.setHeader('Access-Control-Allow-Origin', '*');
@@ -103,7 +105,7 @@ module.exports = async (req, res) => {
             return res.status(200).end();
         }
 
-        // Get Prompt
+        // Extract Prompt
         let prompt = req.query.prompt || (req.body && req.body.prompt);
 
         if (!prompt) {
@@ -114,30 +116,33 @@ module.exports = async (req, res) => {
             });
         }
 
-        // STEP 1: FORCE REFRESH PROXY IP (Safe Execution)
+        // STEP 1: FORCE PRXBIN PROXY REFRESH & IP EXTRACTION
         let rotatedIp = "Rotated Proxy Node";
         try {
             const refreshUrl = `${PRXBIN_IP_CHECK}?_ts=${Date.now()}_${Math.random()}`;
-            const ipRes = await axios.get(refreshUrl, { 
-                timeout: 2000,
-                headers: { 'Cache-Control': 'no-cache' }
-            });
-            if (ipRes && ipRes.data) {
-                rotatedIp = ipRes.data.ip || ipRes.data.origin || rotatedIp;
+            const ipRes = await fetchWithTimeout(refreshUrl, {
+                headers: { 'Cache-Control': 'no-cache, no-store' }
+            }, 2000);
+            
+            if (ipRes.ok) {
+                const ipData = await ipRes.json();
+                rotatedIp = ipData.ip || ipData.origin || rotatedIp;
             }
         } catch (e) {
-            // Keep default fallback string if timeout
+            // Keep default string on proxy check delay
         }
 
-        // STEP 2: EXECUTE AI QUERY (Safe Dual Provider Execution)
+        // STEP 2: EXECUTE AI ROUTE VIA PROXY
         let aiReply = await queryPollinations(prompt);
 
+        // Fallback to Blackbox AI if Pollinations returns 402/Empty
         if (isErrorResponse(aiReply)) {
             aiReply = await queryBlackbox(prompt);
         }
 
+        // Clean JSON Output Fallback
         if (!aiReply || isErrorResponse(aiReply)) {
-            aiReply = "Service temporarily busy, please resubmit your prompt.";
+            aiReply = "Service temporarily busy, please retry your request.";
         }
 
         return res.status(200).json({
@@ -149,12 +154,11 @@ module.exports = async (req, res) => {
         });
 
     } catch (fatalError) {
-        // Catch any unexpected runtime crash and return JSON error instead of 500 Function Crash
+        // Safe Output: Never Crash Vercel Execution
         return res.status(200).json({
             success: false,
-            error: "Runtime execution fallback: " + fatalError.message,
+            error: "Execution Exception: " + fatalError.message,
             developer: "@lakshitpatidar"
         });
     }
 };
-            
